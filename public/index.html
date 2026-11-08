@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Archive — High-End Cinema</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@300;400;500;600;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Ad Blocker Notice -->
+<div id="ad-notice" style="background: var(--accent); color: white; text-align: center; padding: 0.8rem; font-family: var(--font-sans); font-size: 0.9rem; font-weight: 500; position: relative; z-index: 1000;">
+  For an uninterrupted, ad-free experience, please use <strong>Brave Browser</strong> or install <strong>uBlock Origin</strong>.
+  <button onclick="document.getElementById('ad-notice').style.display='none'" style="background: none; border: none; color: white; font-weight: bold; cursor: pointer; margin-left: 1rem;">✕</button>
+</div>
+  <div class="grain"></div>
+
+  <nav class="nav" id="main-nav">
+    <div class="nav-left">
+      <h1 class="logo" onclick="loadHome(event)" style="cursor: pointer;">A<span>.</span></h1>
+    </div>
+    <div class="nav-center">
+      <a href="#" onclick="loadHome(event)">Home</a>
+      <a href="#" onclick="loadMovies(event)">Films</a>
+      <a href="#" onclick="loadSeries(event)">Series</a>
+    </div>
+    <div class="nav-right">
+      <div class="search-wrap">
+        <input type="text" id="searchInput" placeholder="Search the archive..." onkeyup="if(event.key==='Enter') triggerSearch(event)">
+        <button onclick="triggerSearch(event)">↗</button>
+      </div>
+    </div>
+  </nav>
+
+  <header class="hero" id="hero-section">
+    <div class="hero-bg" id="hero-bg"></div>
+    <div class="hero-gradient"></div>
+    <div class="hero-content">
+      <p class="hero-meta">Featured Selection</p>
+      <h1 class="hero-title" id="hero-title"></h1>
+      <div class="hero-bottom">
+        <p class="hero-year" id="hero-year"></p>
+        <button class="play-btn" id="hero-play">
+          <span class="play-icon">▶</span> Watch Now
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="main-content" id="main-content"></main>
+
+  <!-- Episode Selector Modal -->
+  <div id="episode-selector" class="modal-overlay">
+    <div class="modal-content">
+      <button class="close-modal" onclick="closeEpisodeSelector()">✕</button>
+      <h2 id="modal-title">Select Episode</h2>
+      
+      <div class="selector-row">
+        <label>Season:</label>
+        <select id="seasonDropdown" onchange="loadEpisodes()"></select>
+      </div>
+
+      <div id="episode-grid" class="episode-grid"></div>
+    </div>
+  </div>
+
+  <!-- Player Overlay -->
+  <div id="player-container">
+    <button class="close-btn" onclick="closePlayer()">✕ Close</button>
+    <button class="fullscreen-btn" onclick="toggleFullscreen()">⛶ Fullscreen</button>
+    
+    <div id="player-loader" class="loader"></div>
+
+    <div class="player-frame">
+      <iframe 
+        id="videoPlayer" 
+        allowfullscreen="true" 
+        webkitallowfullscreen="true" 
+        mozallowfullscreen="true"
+        allow="autoplay; encrypted-media; fullscreen; picture-in-picture; web-share"
+        onload="setTimeout(() => { document.getElementById('player-loader').style.display = 'none'; }, 1500);"
+      ></iframe>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
