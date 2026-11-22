@@ -299,4 +299,74 @@ function setAnimeAudio(audio) {
 function startAnimePlayback(malId, episode) {
   closeEpisodeSelector();
   document.getElementById('player-container').style.display = 'block';
- 
+  document.getElementById('player-loader').style.display = 'block';
+  showControls();
+  const iframe = document.getElementById('videoPlayer');
+  iframe.src = `https://vidora.ac/anime/${malId}/${episode}/${currentAnimeAudio}`;
+}
+
+function closeEpisodeSelector() {
+  document.getElementById('episode-selector').style.display = 'none';
+}
+
+// ── Movie / TV playback
+function startPlayback(tmdbId, title, type, season, episode) {
+  closeEpisodeSelector();
+  document.getElementById('player-container').style.display = 'block';
+  document.getElementById('player-loader').style.display = 'block';
+  showControls();
+
+  const iframe = document.getElementById('videoPlayer');
+  
+  if (type === 'tv') {
+    iframe.src = `https://vidora.ac/tv/${tmdbId}/${season}/${episode}`;
+  } else {
+    iframe.src = `https://vidora.ac/movie/${tmdbId}`;
+  }
+}
+
+function closePlayer() {
+  if (document.fullscreenElement) document.exitFullscreen().catch(err => console.log(err));
+  document.getElementById('player-container').style.display = 'none';
+  document.getElementById('videoPlayer').src = '';
+  document.getElementById('player-loader').style.display = 'none';
+}
+
+function toggleFullscreen() {
+  const container = document.getElementById('player-container');
+  if (!document.fullscreenElement) {
+    if (container.requestFullscreen) container.requestFullscreen();
+    else if (container.webkitRequestFullscreen) container.webkitRequestFullscreen();
+  } else {
+    if (document.exitFullscreen) document.exitFullscreen();
+  }
+}
+
+function showControls() {
+  const closeBtn = document.querySelector('.close-btn');
+  const fsBtn = document.querySelector('.fullscreen-btn');
+  
+  if (closeBtn) closeBtn.classList.remove('hidden');
+  if (fsBtn) fsBtn.classList.remove('hidden');
+
+  clearTimeout(controlsTimeout);
+  controlsTimeout = setTimeout(() => {
+    if (closeBtn) closeBtn.classList.add('hidden');
+    if (fsBtn) fsBtn.classList.add('hidden');
+  }, 3000);
+}
+
+document.addEventListener('mousemove', () => {
+  if (document.getElementById('player-container').style.display === 'block') {
+    showControls();
+  }
+});
+
+document.addEventListener('touchstart', () => {
+  if (document.getElementById('player-container').style.display === 'block') {
+    showControls();
+  }
+});
+
+// --- INITIALIZE THE HOMEPAGE ---
+loadHome();
