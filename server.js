@@ -9,6 +9,7 @@ const PORT = process.env.PORT || 3000;
 const TMDB_API_KEY = '2d09e0079a61e4b836ed9bd471ee73ed';
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
 const JIKAN_BASE_URL = 'https://api.jikan.moe/v4';
+const ANILIST_URL = 'https://graphql.anilist.co';
 
 app.use(express.json());
 app.use(cookieParser());
@@ -131,8 +132,8 @@ const formatMedia = (items) => items.map(m => {
   };
 });
 
-// ── Jikan formatting (MAL anime)
-const formatAnime = (items) => (items || []).map(a => ({
+// ── Jikan (MAL) formatting — fallback source
+const formatAnimeJikan = (items) => (items || []).map(a => ({
   id: a.mal_id,
   title: a.title_english || a.title || a.title_japanese || 'Untitled',
   year: (a.year || (a.aired && a.aired.prop && a.aired.prop.from && a.aired.prop.from.year)) || 'N/A',
@@ -143,10 +144,24 @@ const formatAnime = (items) => (items || []).map(a => ({
   media_type: 'anime'
 }));
 
-// ── Jikan cache (avoid hammering their API)
+// ── AniList formatting — primary source
+const formatAniListMedia = (m) => {
+  const id = m.idMal || m.id;
+  return {
+    id,
+    title: (m.title && (m.title.english || m.title.romaji || m.title.native)) || 'Untitled',
+    year: m.seasonYear || 'N/A',
+    poster: (m.coverImage && m.coverImage.large) || 'https://via.placeholder.com/500x750?text=No+Poster',
+    backdrop: null,
+    episodes: m.episodes || null,
+    score: m.averageScore ? m.averageScore / 10 : null,
+    media_type: 'anime'
+  };
+};
+
+// ── Cache
 const jikanCache = new Map();
 const JIKAN_CACHE_TTL = 30 * 60 * 1000;
-
 function cacheGet(key) {
   const c = jikanCache.get(key);
   if (c && Date.now() - c.ts < JIKAN_CACHE_TTL) return c.data;
@@ -156,12 +171,59 @@ function cacheSet(key, data) {
   jikanCache.set(key, { data, ts: Date.now() });
 }
 
+// ── AniList helper
+async function anilistQuery(query, variables = {}) {
+  const res = await axios.post(ANILIST_URL, { query, variables }, {
+    timeout: 12000,
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+  });
+  return res.data.data;
+}
+
+const ANILIST_LIST_QUERY = `
+  query ($page: Int, $perPage: Int) {
+    Page(page: $page, perPage: $perPage) {
+      media(type: ANIME, sort: POPULARITY_DESC, isAdult: false) {
+        id idMal
+        title { romaji english native }
+        coverImage { large }
+        seasonYear episodes averageScore
+      }
+    }
+  }
+`;
+
+const ANILIST_SEARCH_QUERY = `
+  query ($search: String, $page: Int, $perPage: Int) {
+    Page(page: $page, perPage: $perPage) {
+      media(type: ANIME, search: $search, sort: SEARCH_MATCH, isAdult: false) {
+        id idMal
+        title { romaji english native }
+        coverImage { large }
+        seasonYear episodes averageScore
+      }
+    }
+  }
+`;
+
+const ANILIST_ONE_QUERY = `
+  query ($idMal: Int) {
+    Media(idMal: $idMal, type: ANIME) {
+      id idMal
+      title { romaji english native }
+      coverImage { large }
+      seasonYear episodes
+    }
+  }
+`;
+
+// ── Jikan helper (fallback)
 async function jikanGet(path, params = {}) {
   const res = await axios.get(`${JIKAN_BASE_URL}${path}`, {
     params,
     timeout: 12000,
     headers: {
-      'User-Agent': 'PirateStream/1.0 (+https://pirate-stream.onrender.com)',
+      'User-Agent': 'PirateStream/1.0',
       'Accept': 'application/json',
     },
   });
@@ -171,19 +233,31 @@ async function jikanGet(path, params = {}) {
 // ── Home
 app.get('/api/home', async (req, res) => {
   try {
-    const [trendingRes, actionRes, seriesRes, bollywoodRes, animeRes] = await Promise.allSettled([
-      axios.get(`${TMDB_BASE_URL}/trending/all/week?api_key=${TMDB_API_KEY}`),
-      axios.get(`${TMDB_BASE_URL}/discover/movie?api_key=${TMDB_API_KEY}&with_genres=28&sort_by=popularity.desc`),
-      axios.get(`${TMDB_BASE_URL}/discover/tv?api_key=${TMDB_API_KEY}&sort_by=popularity.desc`),
-      axios.get(`${TMDB_BASE_URL}/discover/movie?api_key=${TMDB_API_KEY}&with_original_language=hi&sort_by=popularity.desc`),
-      jikanGet('/top/anime', { limit: 24 }).catch(() => ({ data: [] })),
+    const animePromise = (async () => {
+      try {
+        const d = await anilistQuery(ANILIST_LIST_QUERY, { page: 1, perPage: 24 });
+        return (d?.Page?.media || []).filter(m => m.idMal).map(formatAniListMedia);
+      } catch (e) {
+        console.error('AniList home row failed:', e.message);
+        try {
+          const d = await jikanGet('/top/anime', { limit: 24 });
+          return formatAnimeJikan(d.data || []);
+        } catch { return []; }
+      }
+    })();
+
+    const [trendingRes, actionRes, seriesRes, bollywoodRes, anime] = await Promise.all([
+      axios.get(`${TMDB_BASE_URL}/trending/all/week?api_key=${TMDB_API_KEY}`).catch(() => null),
+      axios.get(`${TMDB_BASE_URL}/discover/movie?api_key=${TMDB_API_KEY}&with_genres=28&sort_by=popularity.desc`).catch(() => null),
+      axios.get(`${TMDB_BASE_URL}/discover/tv?api_key=${TMDB_API_KEY}&sort_by=popularity.desc`).catch(() => null),
+      axios.get(`${TMDB_BASE_URL}/discover/movie?api_key=${TMDB_API_KEY}&with_original_language=hi&sort_by=popularity.desc`).catch(() => null),
+      animePromise,
     ]);
 
-    const trending = trendingRes.status === 'fulfilled' ? trendingRes.value.data.results : [];
-    const action = actionRes.status === 'fulfilled' ? actionRes.value.data.results : [];
-    const series = seriesRes.status === 'fulfilled' ? seriesRes.value.data.results : [];
-    const bollywood = bollywoodRes.status === 'fulfilled' ? bollywoodRes.value.data.results : [];
-    const anime = animeRes.status === 'fulfilled' ? (animeRes.value.data || []) : [];
+    const trending = trendingRes ? trendingRes.data.results : [];
+    const action = actionRes ? actionRes.data.results : [];
+    const series = seriesRes ? seriesRes.data.results : [];
+    const bollywood = bollywoodRes ? bollywoodRes.data.results : [];
 
     const heroPool = trending.filter(m => m.backdrop_path);
     const hero = heroPool.length > 0 ? heroPool[Math.floor(Math.random() * Math.min(10, heroPool.length))] : trending[0];
@@ -192,7 +266,7 @@ app.get('/api/home', async (req, res) => {
       hero: hero ? formatMedia([hero])[0] : null,
       rows: [
         { title: 'Trending Now', items: formatMedia(trending) },
-        { title: 'Top Anime', items: formatAnime(anime) },
+        { title: 'Top Anime', items: anime },
         { title: 'Blockbusters (Hollywood)', items: formatMedia(action) },
         { title: 'Popular Series', items: formatMedia(series) },
         { title: 'Bollywood Hits', items: formatMedia(bollywood) }
@@ -229,7 +303,7 @@ app.get('/api/search', async (req, res) => {
   } catch { res.status(500).json({ error: 'Failed' }); }
 });
 
-// ── Anime routes (Jikan, fail-safe)
+// ── Anime routes (AniList primary, Jikan fallback)
 app.get('/api/anime', async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const key = `top:${page}`;
@@ -237,10 +311,22 @@ app.get('/api/anime', async (req, res) => {
   if (cached) return res.json(cached);
 
   try {
+    const data = await anilistQuery(ANILIST_LIST_QUERY, { page, perPage: 24 });
+    const media = (data?.Page?.media || []).filter(m => m.idMal);
+    if (media.length) {
+      const formatted = media.map(formatAniListMedia);
+      cacheSet(key, formatted);
+      return res.json(formatted);
+    }
+  } catch (err) {
+    console.error('AniList /top/anime failed:', err.message);
+  }
+
+  try {
     const data = await jikanGet('/top/anime', { limit: 24, page });
-    const formatted = formatAnime(data.data || []);
+    const formatted = formatAnimeJikan(data.data || []);
     cacheSet(key, formatted);
-    res.json(formatted);
+    return res.json(formatted);
   } catch (err) {
     console.error('Jikan /top/anime failed:', err.message);
     res.json([]);
@@ -255,23 +341,54 @@ app.get('/api/anime/search', async (req, res) => {
   if (cached) return res.json(cached);
 
   try {
-    const data = await jikanGet('/anime', { q: query, limit: 24, order_by: 'score', sort: 'desc' });
-    const formatted = formatAnime(data.data || []);
-    cacheSet(key, formatted);
-    res.json(formatted);
+    const data = await anilistQuery(ANILIST_SEARCH_QUERY, { search: query, page: 1, perPage: 24 });
+    const media = (data?.Page?.media || []).filter(m => m.idMal);
+    if (media.length) {
+      const formatted = media.map(formatAniListMedia);
+      cacheSet(key, formatted);
+      return res.json(formatted);
+    }
   } catch (err) {
-    console.error('Jikan /anime search failed:', err.message);
+    console.error('AniList search failed:', err.message);
+  }
+
+  try {
+    const data = await jikanGet('/anime', { q: query, limit: 24, order_by: 'score', sort: 'desc' });
+    const formatted = formatAnimeJikan(data.data || []);
+    cacheSet(key, formatted);
+    return res.json(formatted);
+  } catch (err) {
+    console.error('Jikan search failed:', err.message);
     res.json([]);
   }
 });
 
 app.get('/api/anime/:id', async (req, res) => {
-  const key = `id:${req.params.id}`;
+  const id = parseInt(req.params.id);
+  const key = `id:${id}`;
   const cached = cacheGet(key);
   if (cached) return res.json(cached);
 
   try {
-    const data = await jikanGet(`/anime/${req.params.id}`);
+    const data = await anilistQuery(ANILIST_ONE_QUERY, { idMal: id });
+    const m = data?.Media;
+    if (m) {
+      const out = {
+        id: m.idMal,
+        title: (m.title && (m.title.english || m.title.romaji || m.title.native)) || 'Untitled',
+        episodes: m.episodes || null,
+        year: m.seasonYear || 'N/A',
+        poster: m.coverImage && m.coverImage.large,
+      };
+      cacheSet(key, out);
+      return res.json(out);
+    }
+  } catch (err) {
+    console.error(`AniList /anime/${id} failed:`, err.message);
+  }
+
+  try {
+    const data = await jikanGet(`/anime/${id}`);
     const a = data.data;
     const out = {
       id: a.mal_id,
@@ -284,8 +401,8 @@ app.get('/api/anime/:id', async (req, res) => {
     cacheSet(key, out);
     res.json(out);
   } catch (err) {
-    console.error(`Jikan /anime/${req.params.id} failed:`, err.message);
-    res.json({ id: req.params.id, title: 'Unknown', episodes: null });
+    console.error(`Jikan /anime/${id} failed:`, err.message);
+    res.json({ id, title: 'Unknown', episodes: null });
   }
 });
 
