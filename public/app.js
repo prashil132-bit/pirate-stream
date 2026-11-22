@@ -16,7 +16,13 @@ let currentModalMedia = null;
 let controlsTimeout;
 let currentAnimeAudio = 'sub';
 
-// ── hide cards that aren't on vidora
+function confirmAdult() {
+  if (sessionStorage.getItem('adult_confirmed') === '1') return true;
+  const ok = window.confirm('This section contains explicit adult content (18+). Continue?');
+  if (ok) sessionStorage.setItem('adult_confirmed', '1');
+  return ok;
+}
+
 async function filterAvailableCards(containerEl) {
   const cards = Array.from(containerEl.querySelectorAll('.card[data-tmdb]'));
   if (!cards.length) return;
@@ -117,7 +123,6 @@ async function loadMovies(event) {
     main.innerHTML = `<div class="search-grid" style="padding-top: 8rem;">${movies.map(cardHTML).join('')}</div>`;
     filterAvailableCards(main);
   } catch (err) {
-    console.error('loadMovies failed:', err);
     main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center; color: #ff6666;">Connection lost: ${err.message}</div>`;
   }
 }
@@ -136,7 +141,6 @@ async function loadSeries(event) {
     main.innerHTML = `<div class="search-grid" style="padding-top: 8rem;">${series.map(cardHTML).join('')}</div>`;
     filterAvailableCards(main);
   } catch (err) {
-    console.error('loadSeries failed:', err);
     main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center; color: #ff6666;">Connection lost: ${err.message}</div>`;
   }
 }
@@ -151,22 +155,78 @@ async function loadAnime(event) {
 
   try {
     const res = await fetch('/api/anime');
-    console.log('anime fetch status:', res.status);
     if (!res.ok) throw new Error(`server returned ${res.status}`);
     const anime = await res.json();
-    console.log('anime payload:', anime);
     if (!Array.isArray(anime)) throw new Error('unexpected response shape');
     if (anime.length === 0) {
       main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center;">
-        Anime list is empty. Jikan (MAL) API may be slow or rate-limited right now. <button onclick="loadAnime(event)" style="margin-left:1rem;background:var(--accent);color:#fff;border:none;padding:0.5rem 1rem;border-radius:8px;cursor:pointer;">Retry</button>
+        Anime list is empty right now.
+        <button onclick="loadAnime(event)" style="margin-left:1rem;background:var(--accent);color:#fff;border:none;padding:0.5rem 1rem;border-radius:8px;cursor:pointer;">Retry</button>
       </div>`;
       return;
     }
     main.innerHTML = `<div class="search-grid" style="padding-top: 8rem;">${anime.map(cardHTML).join('')}</div>`;
     filterAvailableCards(main);
   } catch (err) {
-    console.error('loadAnime failed:', err);
-    main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center; color: #ff6666;">Anime failed: ${err.message}<br><button onclick="loadAnime(event)" style="margin-top:1rem;background:var(--accent);color:#fff;border:none;padding:0.5rem 1rem;border-radius:8px;cursor:pointer;">Retry</button></div>`;
+    main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center; color: #ff6666;">Anime failed: ${err.message}</div>`;
+  }
+}
+
+async function loadHentai(event) {
+  if (event) event.preventDefault();
+  if (!confirmAdult()) return;
+  document.getElementById('hero-section').style.display = 'none';
+  document.getElementById('searchInput').value = '';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  const main = document.getElementById('main-content');
+  main.innerHTML = `
+    <div style="padding-top: 6rem;">
+      <div class="inline-search">
+        <input type="text" id="hentaiSearchInput" placeholder="Search hentai..." onkeyup="if(event.key==='Enter') searchHentai(event)">
+        <button onclick="searchHentai(event)">↗</button>
+      </div>
+      <div style="text-align: center; color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.5rem;">18+ only</div>
+      <div id="hentai-grid" class="search-grid" style="padding-top: 0;">Loading...</div>
+    </div>
+  `;
+
+  try {
+    const res = await fetch('/api/hentai');
+    if (!res.ok) throw new Error(`server returned ${res.status}`);
+    const anime = await res.json();
+    const grid = document.getElementById('hentai-grid');
+    if (!Array.isArray(anime) || anime.length === 0) {
+      grid.innerHTML = `<div style="text-align:center;width:100%;grid-column:1/-1;">No hentai returned.</div>`;
+      return;
+    }
+    grid.innerHTML = anime.map(cardHTML).join('');
+    filterAvailableCards(grid);
+  } catch (err) {
+    document.getElementById('hentai-grid').innerHTML = `<div style="color:#ff6666;text-align:center;width:100%;grid-column:1/-1;">Failed: ${err.message}</div>`;
+  }
+}
+
+async function searchHentai(event) {
+  if (event) event.preventDefault();
+  const input = document.getElementById('hentaiSearchInput');
+  const q = (input?.value || '').trim();
+  const grid = document.getElementById('hentai-grid');
+  if (!q) {
+    grid.innerHTML = 'Type something to search.';
+    return;
+  }
+  grid.innerHTML = 'Searching...';
+  try {
+    const res = await fetch(`/api/hentai/search?q=${encodeURIComponent(q)}`);
+    const anime = await res.json();
+    if (!Array.isArray(anime) || anime.length === 0) {
+      grid.innerHTML = `<div style="text-align:center;width:100%;grid-column:1/-1;">No results for "${q}".</div>`;
+      return;
+    }
+    grid.innerHTML = anime.map(cardHTML).join('');
+    filterAvailableCards(grid);
+  } catch (err) {
+    grid.innerHTML = `<div style="color:#ff6666;text-align:center;width:100%;grid-column:1/-1;">Search failed: ${err.message}</div>`;
   }
 }
 
@@ -196,7 +256,6 @@ async function triggerSearch(event) {
     main.innerHTML = `<div class="search-grid" style="padding-top: 8rem;">${all.map(cardHTML).join('')}</div>`;
     filterAvailableCards(main);
   } catch (err) {
-    console.error('triggerSearch failed:', err);
     main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center; color: #ff6666;">Search failed: ${err.message}</div>`;
   }
 }
@@ -211,7 +270,6 @@ function playMedia(id, title, type) {
   }
 }
 
-// ── TV episode selector
 async function openEpisodeSelector(tmdbId, title) {
   document.getElementById('episode-selector').style.display = 'flex';
   document.getElementById('modal-title').innerText = title;
@@ -253,7 +311,6 @@ async function loadEpisodes() {
   }
 }
 
-// ── Anime episode selector
 async function openAnimeEpisodeSelector(malId, title) {
   document.getElementById('episode-selector').style.display = 'flex';
   document.getElementById('modal-title').innerText = title;
@@ -272,7 +329,6 @@ async function openAnimeEpisodeSelector(malId, title) {
     const count = data.episodes || 100;
     renderAnimeEpisodes(malId, count);
   } catch (err) {
-    console.error('openAnimeEpisodeSelector failed:', err);
     renderAnimeEpisodes(malId, 100);
   }
 }
@@ -296,20 +352,21 @@ function setAnimeAudio(audio) {
   });
 }
 
+// ── ANIME PLAYBACK → MEGAPLAY (MAL ids)
 function startAnimePlayback(malId, episode) {
   closeEpisodeSelector();
   document.getElementById('player-container').style.display = 'block';
   document.getElementById('player-loader').style.display = 'block';
   showControls();
   const iframe = document.getElementById('videoPlayer');
-  iframe.src = `https://vidora.ac/anime/${malId}/${episode}/${currentAnimeAudio}`;
+  iframe.src = `https://megaplay.buzz/stream/mal/${malId}/${episode}/${currentAnimeAudio}`;
 }
 
 function closeEpisodeSelector() {
   document.getElementById('episode-selector').style.display = 'none';
 }
 
-// ── Movie / TV playback
+// ── MOVIE / TV PLAYBACK → VIDORA (TMDB ids)
 function startPlayback(tmdbId, title, type, season, episode) {
   closeEpisodeSelector();
   document.getElementById('player-container').style.display = 'block';
@@ -368,5 +425,4 @@ document.addEventListener('touchstart', () => {
   }
 });
 
-// --- INITIALIZE THE HOMEPAGE ---
 loadHome();
