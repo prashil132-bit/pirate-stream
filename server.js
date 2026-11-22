@@ -10,6 +10,7 @@ const TMDB_API_KEY = '2d09e0079a61e4b836ed9bd471ee73ed';
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
 const JIKAN_BASE_URL = 'https://api.jikan.moe/v4';
 const ANILIST_URL = 'https://graphql.anilist.co';
+const MEGAPLAY_BASE = 'https://megaplay.buzz';
 
 app.use(express.json());
 app.use(cookieParser());
@@ -38,10 +39,10 @@ app.post('/api/auth', (req, res) => {
   }
 });
 
-// ── Vidora availability check (cached)
-const vidoraCache = new Map();
-const VIDORA_CACHE_TTL = 3600 * 1000;
-const VIDORA_TIMEOUT = 8000;
+// ── Source availability check (vidora for movie/tv, megaplay for anime)
+const sourceCache = new Map();
+const SOURCE_CACHE_TTL = 3600 * 1000;
+const SOURCE_TIMEOUT = 8000;
 
 const NOT_FOUND_SIGNALS = [
   'not found', 'not available', 'no sources', 'no source',
@@ -54,19 +55,21 @@ const SUCCESS_SIGNALS = [
   'hls', '<iframe', 'player-container', 'player-wrapper',
 ];
 
-async function checkVidora(type, id) {
+function buildSourceUrl(type, id) {
+  if (type === 'tv') return `https://vidora.ac/tv/${id}/1/1`;
+  if (type === 'anime') return `${MEGAPLAY_BASE}/stream/mal/${id}/1/sub`;
+  return `https://vidora.ac/movie/${id}`;
+}
+
+async function checkSource(type, id) {
   const key = `${type}:${id}`;
-  const cached = vidoraCache.get(key);
-  if (cached && Date.now() - cached.ts < VIDORA_CACHE_TTL) return cached.ok;
+  const cached = sourceCache.get(key);
+  if (cached && Date.now() - cached.ts < SOURCE_CACHE_TTL) return cached.ok;
 
-  let url;
-  if (type === 'tv') url = `https://vidora.ac/tv/${id}/1/1`;
-  else if (type === 'anime') url = `https://vidora.ac/anime/${id}/1/sub`;
-  else url = `https://vidora.ac/movie/${id}`;
-
+  const url = buildSourceUrl(type, id);
   try {
     const res = await axios.get(url, {
-      timeout: VIDORA_TIMEOUT,
+      timeout: SOURCE_TIMEOUT,
       validateStatus: () => true,
       maxContentLength: 500000,
       headers: {
@@ -86,7 +89,7 @@ async function checkVidora(type, id) {
       else ok = true;
     } else ok = true;
 
-    vidoraCache.set(key, { ok, ts: Date.now() });
+    sourceCache.set(key, { ok, ts: Date.now() });
     return ok;
   } catch {
     return true;
@@ -97,7 +100,7 @@ app.get('/api/check-vidora', async (req, res) => {
   const { type, id } = req.query;
   if (!type || !id) return res.status(400).json({ error: 'type and id required' });
   if (!['movie', 'tv', 'anime'].includes(type)) return res.status(400).json({ error: 'bad type' });
-  const ok = await checkVidora(type, id);
+  const ok = await checkSource(type, id);
   res.json({ ok });
 });
 
@@ -112,7 +115,7 @@ app.get('/api/check-vidora/batch', async (req, res) => {
   async function worker() {
     while (queue.length) {
       const id = queue.shift();
-      results[id] = await checkVidora(type, id);
+      results[id] = await checkSource(type, id);
     }
   }
   await Promise.all(Array.from({ length: 10 }, worker));
@@ -132,7 +135,7 @@ const formatMedia = (items) => items.map(m => {
   };
 });
 
-// ── Jikan (MAL) formatting — fallback source
+// ── Jikan formatting (fallback)
 const formatAnimeJikan = (items) => (items || []).map(a => ({
   id: a.mal_id,
   title: a.title_english || a.title || a.title_japanese || 'Untitled',
@@ -144,7 +147,7 @@ const formatAnimeJikan = (items) => (items || []).map(a => ({
   media_type: 'anime'
 }));
 
-// ── AniList formatting — primary source
+// ── AniList formatting
 const formatAniListMedia = (m) => {
   const id = m.idMal || m.id;
   return {
@@ -217,15 +220,38 @@ const ANILIST_ONE_QUERY = `
   }
 `;
 
+const ANILIST_ADULT_QUERY = `
+  query ($page: Int, $perPage: Int) {
+    Page(page: $page, perPage: $perPage) {
+      media(type: ANIME, sort: POPULARITY_DESC, isAdult: true) {
+        id idMal
+        title { romaji english native }
+        coverImage { large }
+        seasonYear episodes averageScore
+      }
+    }
+  }
+`;
+
+const ANILIST_ADULT_SEARCH_QUERY = `
+  query ($search: String, $page: Int, $perPage: Int) {
+    Page(page: $page, perPage: $perPage) {
+      media(type: ANIME, search: $search, sort: SEARCH_MATCH, isAdult: true) {
+        id idMal
+        title { romaji english native }
+        coverImage { large }
+        seasonYear episodes averageScore
+      }
+    }
+  }
+`;
+
 // ── Jikan helper (fallback)
 async function jikanGet(path, params = {}) {
   const res = await axios.get(`${JIKAN_BASE_URL}${path}`, {
     params,
     timeout: 12000,
-    headers: {
-      'User-Agent': 'PirateStream/1.0',
-      'Accept': 'application/json',
-    },
+    headers: { 'User-Agent': 'PirateStream/1.0', 'Accept': 'application/json' },
   });
   return res.data;
 }
@@ -237,8 +263,7 @@ app.get('/api/home', async (req, res) => {
       try {
         const d = await anilistQuery(ANILIST_LIST_QUERY, { page: 1, perPage: 24 });
         return (d?.Page?.media || []).filter(m => m.idMal).map(formatAniListMedia);
-      } catch (e) {
-        console.error('AniList home row failed:', e.message);
+      } catch {
         try {
           const d = await jikanGet('/top/anime', { limit: 24 });
           return formatAnimeJikan(d.data || []);
@@ -303,7 +328,7 @@ app.get('/api/search', async (req, res) => {
   } catch { res.status(500).json({ error: 'Failed' }); }
 });
 
-// ── Anime routes (AniList primary, Jikan fallback)
+// ── Anime routes (non-adult)
 app.get('/api/anime', async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const key = `top:${page}`;
@@ -363,6 +388,45 @@ app.get('/api/anime/search', async (req, res) => {
   }
 });
 
+// ── Hentai routes
+app.get('/api/hentai', async (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  const key = `hentai:${page}`;
+  const cached = cacheGet(key);
+  if (cached) return res.json(cached);
+
+  try {
+    const data = await anilistQuery(ANILIST_ADULT_QUERY, { page, perPage: 24 });
+    const media = (data?.Page?.media || []).filter(m => m.idMal);
+    const formatted = media.map(formatAniListMedia);
+    cacheSet(key, formatted);
+    res.json(formatted);
+  } catch (err) {
+    console.error('AniList adult query failed:', err.message);
+    res.json([]);
+  }
+});
+
+app.get('/api/hentai/search', async (req, res) => {
+  const query = req.query.q;
+  if (!query) return res.json([]);
+  const key = `hentai-search:${query}`;
+  const cached = cacheGet(key);
+  if (cached) return res.json(cached);
+
+  try {
+    const data = await anilistQuery(ANILIST_ADULT_SEARCH_QUERY, { search: query, page: 1, perPage: 24 });
+    const media = (data?.Page?.media || []).filter(m => m.idMal);
+    const formatted = media.map(formatAniListMedia);
+    cacheSet(key, formatted);
+    res.json(formatted);
+  } catch (err) {
+    console.error('AniList adult search failed:', err.message);
+    res.json([]);
+  }
+});
+
+// ── Single anime meta
 app.get('/api/anime/:id', async (req, res) => {
   const id = parseInt(req.params.id);
   const key = `id:${id}`;
