@@ -127,4 +127,38 @@ app.get('/api/tv/:id/season/:seasonNum', async (req, res) => {
   } catch (error) { res.status(500).json({ error: 'Failed' }); }
 });
 
+const vidoraCache = new Map(); // key: "movie:123" | "tv:456" -> { ok: bool, ts: number }
+const CACHE_TTL = 3600 * 1000; // 1 hour
+
+async function checkVidora(type, tmdbId) {
+  const key = `${type}:${tmdbId}`;
+  const cached = vidoraCache.get(key);
+  if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.ok;
+  
+  const url = type === 'tv' 
+    ? `https://vidora.ac/tv/${tmdbId}/1/1`
+    : `https://vidora.ac/movie/${tmdbId}`;
+  
+  try {
+    const res = await axios.head(url, {
+      timeout: 5000,
+      validateStatus: () => true,
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    });
+    const ok = res.status === 200;
+    vidoraCache.set(key, { ok, ts: Date.now() });
+    return ok;
+  } catch {
+    // on network error, assume ok (don't hide on false negative)
+    return true;
+  }
+}
+
+app.get('/api/check-vidora', async (req, res) => {
+  const { type, id } = req.query;
+  if (!type || !id) return res.status(400).json({ error: 'type and id required' });
+  const ok = await checkVidora(type, id);
+  res.json({ ok });
+});
+
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
