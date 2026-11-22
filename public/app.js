@@ -15,6 +15,36 @@ let currentHeroMovie = null;
 let currentModalMedia = null;
 let controlsTimeout;
 
+// ── hide cards that aren't on vidora
+async function filterAvailableCards(containerEl) {
+  const cards = Array.from(containerEl.querySelectorAll('.card[data-tmdb]'));
+  if (!cards.length) return;
+
+  const byType = {};
+  for (const c of cards) {
+    const t = c.dataset.type;
+    if (!byType[t]) byType[t] = [];
+    byType[t].push(c.dataset.tmdb);
+  }
+
+  for (const type of Object.keys(byType)) {
+    const ids = byType[type];
+    try {
+      const res = await fetch(`/api/check-vidora/batch?type=${type}&ids=${ids.join(',')}`);
+      const { results } = await res.json();
+      for (const c of cards) {
+        if (c.dataset.type !== type) continue;
+        const ok = results[c.dataset.tmdb];
+        if (ok === false) {
+          c.style.display = 'none';
+        }
+      }
+    } catch (err) {
+      console.warn('Availability check failed:', err.message);
+    }
+  }
+}
+
 async function loadHome(event) {
   if (event) event.preventDefault();
   document.getElementById('hero-section').style.display = 'flex';
@@ -48,7 +78,7 @@ async function loadHome(event) {
         <h2 class="row-title">${row.title}</h2>
         <div class="row-scroll">
           ${row.items.map(m => `
-            <div class="card" onclick="playMedia(${m.id}, '${m.title.replace(/'/g, "\\'")}', '${m.media_type}')">
+            <div class="card" data-tmdb="${m.id}" data-type="${m.media_type}" onclick="playMedia(${m.id}, '${m.title.replace(/'/g, "\\'")}', '${m.media_type}')">
               <img src="${m.poster}" class="card-img" loading="lazy">
               <div class="card-info">
                 <div class="card-title">${m.title}</div>
@@ -60,6 +90,7 @@ async function loadHome(event) {
       `;
       main.appendChild(rowEl);
       setTimeout(() => { rowEl.style.opacity = '1'; rowEl.style.transform = 'translateY(0)'; }, index * 100);
+      filterAvailableCards(rowEl);
     });
   } catch (err) {
     main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center;">Failed to load. ${err.message}</div>`;
@@ -78,10 +109,11 @@ async function loadMovies(event) {
     const res = await fetch('/api/movies');
     const movies = await res.json();
     main.innerHTML = `<div class="search-grid" style="padding-top: 8rem;">${movies.map(m => `
-      <div class="card" onclick="playMedia(${m.id}, '${m.title.replace(/'/g, "\\'")}', '${m.media_type}')">
+      <div class="card" data-tmdb="${m.id}" data-type="${m.media_type}" onclick="playMedia(${m.id}, '${m.title.replace(/'/g, "\\'")}', '${m.media_type}')">
         <img src="${m.poster}" class="card-img" loading="lazy">
         <div class="card-info"><div class="card-title">${m.title}</div><div class="card-year">${m.year}</div></div>
       </div>`).join('')}</div>`;
+    filterAvailableCards(main);
   } catch (err) { main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center; color: red;">Connection lost.</div>`; }
 }
 
@@ -97,10 +129,11 @@ async function loadSeries(event) {
     const res = await fetch('/api/series');
     const series = await res.json();
     main.innerHTML = `<div class="search-grid" style="padding-top: 8rem;">${series.map(m => `
-      <div class="card" onclick="playMedia(${m.id}, '${m.title.replace(/'/g, "\\'")}', '${m.media_type}')">
+      <div class="card" data-tmdb="${m.id}" data-type="${m.media_type}" onclick="playMedia(${m.id}, '${m.title.replace(/'/g, "\\'")}', '${m.media_type}')">
         <img src="${m.poster}" class="card-img" loading="lazy">
         <div class="card-info"><div class="card-title">${m.title}</div><div class="card-year">${m.year}</div></div>
       </div>`).join('')}</div>`;
+    filterAvailableCards(main);
   } catch (err) { main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center; color: red;">Connection lost.</div>`; }
 }
 
@@ -121,10 +154,11 @@ async function triggerSearch(event) {
       return;
     }
     main.innerHTML = `<div class="search-grid" style="padding-top: 8rem;">${movies.map(m => `
-      <div class="card" onclick="playMedia(${m.id}, '${m.title.replace(/'/g, "\\'")}', '${m.media_type}')">
+      <div class="card" data-tmdb="${m.id}" data-type="${m.media_type}" onclick="playMedia(${m.id}, '${m.title.replace(/'/g, "\\'")}', '${m.media_type}')">
         <img src="${m.poster}" class="card-img" loading="lazy">
         <div class="card-info"><div class="card-title">${m.title}</div><div class="card-year">${m.year}</div></div>
       </div>`).join('')}</div>`;
+    filterAvailableCards(main);
   } catch (err) { main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center; color: red;">Connection lost.</div>`; }
 }
 
@@ -183,7 +217,6 @@ function startPlayback(tmdbId, title, type, season, episode) {
   document.getElementById('player-container').style.display = 'block';
   document.getElementById('player-loader').style.display = 'block';
   
-  // Show controls and start hide timer
   showControls();
 
   const iframe = document.getElementById('videoPlayer');
