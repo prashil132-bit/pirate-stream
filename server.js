@@ -8,6 +8,7 @@ const PORT = process.env.PORT || 3000;
 
 const TMDB_API_KEY = '2d09e0079a61e4b836ed9bd471ee73ed';
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
+const JIKAN_BASE_URL = 'https://api.jikan.moe/v4';
 
 app.use(express.json());
 app.use(cookieParser());
@@ -52,14 +53,15 @@ const SUCCESS_SIGNALS = [
   'hls', '<iframe', 'player-container', 'player-wrapper',
 ];
 
-async function checkVidora(type, tmdbId) {
-  const key = `${type}:${tmdbId}`;
+async function checkVidora(type, id) {
+  const key = `${type}:${id}`;
   const cached = vidoraCache.get(key);
   if (cached && Date.now() - cached.ts < VIDORA_CACHE_TTL) return cached.ok;
 
-  const url = type === 'tv'
-    ? `https://vidora.ac/tv/${tmdbId}/1/1`
-    : `https://vidora.ac/movie/${tmdbId}`;
+  let url;
+  if (type === 'tv') url = `https://vidora.ac/tv/${id}/1/1`;
+  else if (type === 'anime') url = `https://vidora.ac/anime/${id}/1/sub`;
+  else url = `https://vidora.ac/movie/${id}`;
 
   try {
     const res = await axios.get(url, {
@@ -73,18 +75,15 @@ async function checkVidora(type, tmdbId) {
     });
 
     let ok;
-    if (res.status === 404 || res.status >= 500) {
-      ok = false;
-    } else if (res.status === 200) {
+    if (res.status === 404 || res.status >= 500) ok = false;
+    else if (res.status === 200) {
       const body = String(res.data || '').toLowerCase();
       const hasSuccess = SUCCESS_SIGNALS.some(s => body.includes(s));
       const hasNotFound = NOT_FOUND_SIGNALS.some(s => body.includes(s));
       if (hasSuccess) ok = true;
       else if (hasNotFound) ok = false;
       else ok = true;
-    } else {
-      ok = true;
-    }
+    } else ok = true;
 
     vidoraCache.set(key, { ok, ts: Date.now() });
     return ok;
@@ -96,7 +95,7 @@ async function checkVidora(type, tmdbId) {
 app.get('/api/check-vidora', async (req, res) => {
   const { type, id } = req.query;
   if (!type || !id) return res.status(400).json({ error: 'type and id required' });
-  if (!['movie', 'tv'].includes(type)) return res.status(400).json({ error: 'type must be movie or tv' });
+  if (!['movie', 'tv', 'anime'].includes(type)) return res.status(400).json({ error: 'bad type' });
   const ok = await checkVidora(type, id);
   res.json({ ok });
 });
@@ -104,7 +103,7 @@ app.get('/api/check-vidora', async (req, res) => {
 app.get('/api/check-vidora/batch', async (req, res) => {
   const { type, ids } = req.query;
   if (!type || !ids) return res.status(400).json({ error: 'type and ids required' });
-  if (!['movie', 'tv'].includes(type)) return res.status(400).json({ error: 'type must be movie or tv' });
+  if (!['movie', 'tv', 'anime'].includes(type)) return res.status(400).json({ error: 'bad type' });
 
   const idList = String(ids).split(',').filter(Boolean).slice(0, 100);
   const results = {};
@@ -119,7 +118,7 @@ app.get('/api/check-vidora/batch', async (req, res) => {
   res.json({ results });
 });
 
-// ── TMDB routes
+// ── TMDB formatting
 const formatMedia = (items) => items.map(m => {
   const isTV = m.media_type === 'tv' || m.first_air_date !== undefined || m.name !== undefined;
   return {
@@ -132,24 +131,43 @@ const formatMedia = (items) => items.map(m => {
   };
 });
 
+// ── Jikan formatting (MAL anime)
+const formatAnime = (items) => (items || []).map(a => ({
+  id: a.mal_id,
+  title: a.title_english || a.title || a.title_japanese || 'Untitled',
+  year: (a.year || (a.aired && a.aired.prop && a.aired.prop.from && a.aired.prop.from.year)) || 'N/A',
+  poster: (a.images && a.images.jpg && (a.images.jpg.large_image_url || a.images.jpg.image_url)) || 'https://via.placeholder.com/500x750?text=No+Poster',
+  backdrop: null,
+  episodes: a.episodes || null,
+  score: a.score || null,
+  media_type: 'anime'
+}));
+
+// ── Home
 app.get('/api/home', async (req, res) => {
   try {
-    const results = await Promise.allSettled([
+    const [trendingRes, actionRes, seriesRes, bollywoodRes, animeRes] = await Promise.allSettled([
       axios.get(`${TMDB_BASE_URL}/trending/all/week?api_key=${TMDB_API_KEY}`),
       axios.get(`${TMDB_BASE_URL}/discover/movie?api_key=${TMDB_API_KEY}&with_genres=28&sort_by=popularity.desc`),
       axios.get(`${TMDB_BASE_URL}/discover/tv?api_key=${TMDB_API_KEY}&sort_by=popularity.desc`),
-      axios.get(`${TMDB_BASE_URL}/discover/movie?api_key=${TMDB_API_KEY}&with_original_language=hi&sort_by=popularity.desc`)
+      axios.get(`${TMDB_BASE_URL}/discover/movie?api_key=${TMDB_API_KEY}&with_original_language=hi&sort_by=popularity.desc`),
+      axios.get(`${JIKAN_BASE_URL}/top/anime?limit=24`, { timeout: 10000 })
     ]);
-    const trending = results[0].status === 'fulfilled' ? results[0].value.data.results : [];
-    const action = results[1].status === 'fulfilled' ? results[1].value.data.results : [];
-    const series = results[2].status === 'fulfilled' ? results[2].value.data.results : [];
-    const bollywood = results[3].status === 'fulfilled' ? results[3].value.data.results : [];
+
+    const trending = trendingRes.status === 'fulfilled' ? trendingRes.value.data.results : [];
+    const action = actionRes.status === 'fulfilled' ? actionRes.value.data.results : [];
+    const series = seriesRes.status === 'fulfilled' ? seriesRes.value.data.results : [];
+    const bollywood = bollywoodRes.status === 'fulfilled' ? bollywoodRes.value.data.results : [];
+    const anime = animeRes.status === 'fulfilled' ? (animeRes.value.data.data || []) : [];
+
     const heroPool = trending.filter(m => m.backdrop_path);
     const hero = heroPool.length > 0 ? heroPool[Math.floor(Math.random() * Math.min(10, heroPool.length))] : trending[0];
+
     res.json({
       hero: hero ? formatMedia([hero])[0] : null,
       rows: [
         { title: 'Trending Now', items: formatMedia(trending) },
+        { title: 'Top Anime', items: formatAnime(anime) },
         { title: 'Blockbusters (Hollywood)', items: formatMedia(action) },
         { title: 'Popular Series', items: formatMedia(series) },
         { title: 'Bollywood Hits', items: formatMedia(bollywood) }
@@ -186,6 +204,46 @@ app.get('/api/search', async (req, res) => {
   } catch { res.status(500).json({ error: 'Failed' }); }
 });
 
+// ── Anime routes (Jikan)
+app.get('/api/anime', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const response = await axios.get(`${JIKAN_BASE_URL}/top/anime`, {
+      params: { limit: 24, page },
+      timeout: 10000,
+    });
+    res.json(formatAnime(response.data.data || []));
+  } catch { res.status(500).json({ error: 'Failed to fetch anime' }); }
+});
+
+app.get('/api/anime/search', async (req, res) => {
+  const query = req.query.q;
+  if (!query) return res.json([]);
+  try {
+    const response = await axios.get(`${JIKAN_BASE_URL}/anime`, {
+      params: { q: query, limit: 24, order_by: 'score', sort: 'desc' },
+      timeout: 10000,
+    });
+    res.json(formatAnime(response.data.data || []));
+  } catch { res.status(500).json({ error: 'Search failed' }); }
+});
+
+app.get('/api/anime/:id', async (req, res) => {
+  try {
+    const response = await axios.get(`${JIKAN_BASE_URL}/anime/${req.params.id}`, { timeout: 10000 });
+    const a = response.data.data;
+    res.json({
+      id: a.mal_id,
+      title: a.title_english || a.title,
+      episodes: a.episodes || null,
+      year: (a.year || (a.aired && a.aired.prop && a.aired.prop.from && a.aired.prop.from.year)) || 'N/A',
+      poster: a.images && a.images.jpg && a.images.jpg.large_image_url,
+      status: a.status || '',
+    });
+  } catch { res.status(500).json({ error: 'Failed' }); }
+});
+
+// ── TMDB tv routes
 app.get('/api/tv/:id', async (req, res) => {
   try {
     const response = await axios.get(`${TMDB_BASE_URL}/tv/${req.params.id}?api_key=${TMDB_API_KEY}`);
