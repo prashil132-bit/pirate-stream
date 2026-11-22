@@ -1,164 +1,274 @@
-const express = require('express');
-const axios = require('axios');
-const path = require('path');
-const cookieParser = require('cookie-parser');
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-const TMDB_API_KEY = '2d09e0079a61e4b836ed9bd471ee73ed';
-const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
-
-app.use(express.json());
-app.use(cookieParser());
-
-// Auth Middleware
-const requireAuth = (req, res, next) => {
-  if (req.cookies.archive_auth === 'true') {
-    next();
-  } else {
-    res.redirect('/login.html');
-  }
+// Intercept and block popups triggered by the iframe
+window.open = function() {
+  console.warn("Popup blocked by Archive security.");
+  return null; 
 };
 
-// Serve static files, but don't auto-serve index.html
-app.use(express.static(path.join(__dirname, 'public'), { index: false }));
-
-// Protect the main page
-app.get('/', requireAuth, (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-app.get('/index.html', requireAuth, (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-// Login Endpoint
-app.post('/api/auth', (req, res) => {
-  const { username, password } = req.body;
-  if (username === 'prashil' && password === 'admin0056') {
-    res.cookie('archive_auth', 'true', { maxAge: 86400000, httpOnly: true });
-    res.json({ success: true });
-  } else {
-    res.status(401).json({ error: 'Invalid credentials' });
+window.addEventListener('beforeunload', (event) => {
+  if (document.getElementById('player-container').style.display === 'block') {
+    event.preventDefault();
+    event.returnValue = '';
   }
 });
 
-// --- API ROUTES ---
-const formatMedia = (items) => items.map(m => {
-  const isTV = m.media_type === 'tv' || m.first_air_date !== undefined || m.name !== undefined;
-  return {
-    id: m.id,
-    title: m.title || m.name,
-    year: (m.release_date || m.first_air_date || '').split('-')[0] || 'N/A',
-    poster: m.poster_path ? `https://image.tmdb.org/t/p/w500${m.poster_path}` : 'https://via.placeholder.com/500x750?text=No+Poster',
-    backdrop: m.backdrop_path ? `https://image.tmdb.org/t/p/original${m.backdrop_path}` : null,
-    media_type: isTV ? 'tv' : 'movie'
-  };
-});
+let currentHeroMovie = null;
+let currentModalMedia = null;
+let controlsTimeout;
 
-app.get('/api/home', async (req, res) => {
-  try {
-    const results = await Promise.allSettled([
-      axios.get(`${TMDB_BASE_URL}/trending/all/week?api_key=${TMDB_API_KEY}`),
-      axios.get(`${TMDB_BASE_URL}/discover/movie?api_key=${TMDB_API_KEY}&with_genres=28&sort_by=popularity.desc`),
-      axios.get(`${TMDB_BASE_URL}/discover/tv?api_key=${TMDB_API_KEY}&sort_by=popularity.desc`),
-      axios.get(`${TMDB_BASE_URL}/discover/movie?api_key=${TMDB_API_KEY}&with_original_language=hi&sort_by=popularity.desc`)
-    ]);
+// ── hide cards that aren't on vidora
+async function filterAvailableCards(containerEl) {
+  const cards = Array.from(containerEl.querySelectorAll('.card[data-tmdb]'));
+  if (!cards.length) return;
 
-    const trending = results[0].status === 'fulfilled' ? results[0].value.data.results : [];
-    const action = results[1].status === 'fulfilled' ? results[1].value.data.results : [];
-    const series = results[2].status === 'fulfilled' ? results[2].value.data.results : [];
-    const bollywood = results[3].status === 'fulfilled' ? results[3].value.data.results : [];
-
-    const heroPool = trending.filter(m => m.backdrop_path);
-    const hero = heroPool.length > 0 ? heroPool[Math.floor(Math.random() * Math.min(10, heroPool.length))] : trending[0];
-
-    res.json({
-      hero: hero ? formatMedia([hero])[0] : null,
-      rows: [
-        { title: 'Trending Now', items: formatMedia(trending) },
-        { title: 'Blockbusters (Hollywood)', items: formatMedia(action) },
-        { title: 'Popular Series', items: formatMedia(series) },
-        { title: 'Bollywood Hits', items: formatMedia(bollywood) }
-      ]
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to fetch home data' });
+  const byType = {};
+  for (const c of cards) {
+    const t = c.dataset.type;
+    if (!byType[t]) byType[t] = [];
+    byType[t].push(c.dataset.tmdb);
   }
-});
 
-app.get('/api/movies', async (req, res) => {
-  try {
-    const response = await axios.get(`${TMDB_BASE_URL}/discover/movie?api_key=${TMDB_API_KEY}&sort_by=popularity.desc`);
-    res.json(formatMedia(response.data.results));
-  } catch (error) { res.status(500).json({ error: 'Failed' }); }
-});
-
-app.get('/api/series', async (req, res) => {
-  try {
-    const response = await axios.get(`${TMDB_BASE_URL}/discover/tv?api_key=${TMDB_API_KEY}&sort_by=popularity.desc`);
-    res.json(formatMedia(response.data.results));
-  } catch (error) { res.status(500).json({ error: 'Failed' }); }
-});
-
-app.get('/api/search', async (req, res) => {
-  const query = req.query.q;
-  if (!query) return res.json([]);
-  try {
-    const response = await axios.get(`${TMDB_BASE_URL}/search/multi`, {
-      params: { api_key: TMDB_API_KEY, query: query, include_adult: false }
-    });
-    const results = response.data.results.filter(m => m.media_type !== 'person');
-    res.json(formatMedia(results));
-  } catch (error) { res.status(500).json({ error: 'Failed' }); }
-});
-
-app.get('/api/tv/:id', async (req, res) => {
-  try {
-    const response = await axios.get(`${TMDB_BASE_URL}/tv/${req.params.id}?api_key=${TMDB_API_KEY}`);
-    res.json({ seasons: response.data.seasons.filter(s => s.season_number > 0) });
-  } catch (error) { res.status(500).json({ error: 'Failed' }); }
-});
-
-app.get('/api/tv/:id/season/:seasonNum', async (req, res) => {
-  try {
-    const response = await axios.get(`${TMDB_BASE_URL}/tv/${req.params.id}/season/${req.params.seasonNum}?api_key=${TMDB_API_KEY}`);
-    res.json({ episodes: response.data.episodes });
-  } catch (error) { res.status(500).json({ error: 'Failed' }); }
-});
-
-const vidoraCache = new Map(); // key: "movie:123" | "tv:456" -> { ok: bool, ts: number }
-const CACHE_TTL = 3600 * 1000; // 1 hour
-
-async function checkVidora(type, tmdbId) {
-  const key = `${type}:${tmdbId}`;
-  const cached = vidoraCache.get(key);
-  if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.ok;
-  
-  const url = type === 'tv' 
-    ? `https://vidora.ac/tv/${tmdbId}/1/1`
-    : `https://vidora.ac/movie/${tmdbId}`;
-  
-  try {
-    const res = await axios.head(url, {
-      timeout: 5000,
-      validateStatus: () => true,
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-    });
-    const ok = res.status === 200;
-    vidoraCache.set(key, { ok, ts: Date.now() });
-    return ok;
-  } catch {
-    // on network error, assume ok (don't hide on false negative)
-    return true;
+  for (const type of Object.keys(byType)) {
+    const ids = byType[type];
+    try {
+      const res = await fetch(`/api/check-vidora/batch?type=${type}&ids=${ids.join(',')}`);
+      const { results } = await res.json();
+      for (const c of cards) {
+        if (c.dataset.type !== type) continue;
+        const ok = results[c.dataset.tmdb];
+        if (ok === false) {
+          c.style.display = 'none';
+        }
+      }
+    } catch (err) {
+      console.warn('Availability check failed:', err.message);
+    }
   }
 }
 
-app.get('/api/check-vidora', async (req, res) => {
-  const { type, id } = req.query;
-  if (!type || !id) return res.status(400).json({ error: 'type and id required' });
-  const ok = await checkVidora(type, id);
-  res.json({ ok });
+async function loadHome(event) {
+  if (event) event.preventDefault();
+  document.getElementById('hero-section').style.display = 'flex';
+  document.getElementById('searchInput').value = '';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  const main = document.getElementById('main-content');
+  
+  try {
+    const res = await fetch('/api/home');
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || 'API failed');
+
+    currentHeroMovie = data.hero;
+    if (currentHeroMovie) {
+      document.getElementById('hero-bg').style.backgroundImage = `url(${currentHeroMovie.backdrop})`;
+      document.getElementById('hero-title').innerText = currentHeroMovie.title;
+      document.getElementById('hero-year').innerText = currentHeroMovie.year;
+      document.getElementById('hero-play').style.display = 'flex';
+      document.getElementById('hero-play').onclick = () => playMedia(currentHeroMovie.id, currentHeroMovie.title, currentHeroMovie.media_type);
+    }
+
+    main.innerHTML = '';
+    data.rows.forEach((row, index) => {
+      if (!row.items || row.items.length === 0) return;
+      const rowEl = document.createElement('section');
+      rowEl.className = 'row';
+      rowEl.style.opacity = '0';
+      rowEl.style.transform = 'translateY(20px)';
+      rowEl.style.transition = 'opacity 0.6s ease, transform 0.6s ease';
+      rowEl.innerHTML = `
+        <h2 class="row-title">${row.title}</h2>
+        <div class="row-scroll">
+          ${row.items.map(m => `
+            <div class="card" data-tmdb="${m.id}" data-type="${m.media_type}" onclick="playMedia(${m.id}, '${m.title.replace(/'/g, "\\'")}', '${m.media_type}')">
+              <img src="${m.poster}" class="card-img" loading="lazy">
+              <div class="card-info">
+                <div class="card-title">${m.title}</div>
+                <div class="card-year">${m.year} • ${m.media_type === 'tv' ? 'Series' : 'Film'}</div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      `;
+      main.appendChild(rowEl);
+      setTimeout(() => { rowEl.style.opacity = '1'; rowEl.style.transform = 'translateY(0)'; }, index * 100);
+      filterAvailableCards(rowEl);
+    });
+  } catch (err) {
+    main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center;">Failed to load. ${err.message}</div>`;
+  }
+}
+
+async function loadMovies(event) {
+  if (event) event.preventDefault();
+  document.getElementById('hero-section').style.display = 'none';
+  document.getElementById('searchInput').value = '';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  const main = document.getElementById('main-content');
+  main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center;">Loading films...</div>`;
+
+  try {
+    const res = await fetch('/api/movies');
+    const movies = await res.json();
+    main.innerHTML = `<div class="search-grid" style="padding-top: 8rem;">${movies.map(m => `
+      <div class="card" data-tmdb="${m.id}" data-type="${m.media_type}" onclick="playMedia(${m.id}, '${m.title.replace(/'/g, "\\'")}', '${m.media_type}')">
+        <img src="${m.poster}" class="card-img" loading="lazy">
+        <div class="card-info"><div class="card-title">${m.title}</div><div class="card-year">${m.year}</div></div>
+      </div>`).join('')}</div>`;
+    filterAvailableCards(main);
+  } catch (err) { main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center; color: red;">Connection lost.</div>`; }
+}
+
+async function loadSeries(event) {
+  if (event) event.preventDefault();
+  document.getElementById('hero-section').style.display = 'none';
+  document.getElementById('searchInput').value = '';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  const main = document.getElementById('main-content');
+  main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center;">Loading series...</div>`;
+
+  try {
+    const res = await fetch('/api/series');
+    const series = await res.json();
+    main.innerHTML = `<div class="search-grid" style="padding-top: 8rem;">${series.map(m => `
+      <div class="card" data-tmdb="${m.id}" data-type="${m.media_type}" onclick="playMedia(${m.id}, '${m.title.replace(/'/g, "\\'")}', '${m.media_type}')">
+        <img src="${m.poster}" class="card-img" loading="lazy">
+        <div class="card-info"><div class="card-title">${m.title}</div><div class="card-year">${m.year}</div></div>
+      </div>`).join('')}</div>`;
+    filterAvailableCards(main);
+  } catch (err) { main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center; color: red;">Connection lost.</div>`; }
+}
+
+async function triggerSearch(event) {
+  if (event) event.preventDefault();
+  const query = document.getElementById('searchInput').value.trim();
+  if (!query) return loadHome();
+  document.getElementById('hero-section').style.display = 'none';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  const main = document.getElementById('main-content');
+  main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center;">Searching...</div>`;
+
+  try {
+    const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+    const movies = await res.json();
+    if (!movies.length) {
+      main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center;">No results found.</div>`;
+      return;
+    }
+    main.innerHTML = `<div class="search-grid" style="padding-top: 8rem;">${movies.map(m => `
+      <div class="card" data-tmdb="${m.id}" data-type="${m.media_type}" onclick="playMedia(${m.id}, '${m.title.replace(/'/g, "\\'")}', '${m.media_type}')">
+        <img src="${m.poster}" class="card-img" loading="lazy">
+        <div class="card-info"><div class="card-title">${m.title}</div><div class="card-year">${m.year}</div></div>
+      </div>`).join('')}</div>`;
+    filterAvailableCards(main);
+  } catch (err) { main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center; color: red;">Connection lost.</div>`; }
+}
+
+function playMedia(tmdbId, title, type) {
+  if (type === 'tv') {
+    openEpisodeSelector(tmdbId, title);
+  } else {
+    startPlayback(tmdbId, title, 'movie', null, null);
+  }
+}
+
+async function openEpisodeSelector(tmdbId, title) {
+  document.getElementById('episode-selector').style.display = 'flex';
+  document.getElementById('modal-title').innerText = title;
+  document.getElementById('seasonDropdown').innerHTML = '<option>Loading...</option>';
+  document.getElementById('episode-grid').innerHTML = '';
+  currentModalMedia = { tmdbId, title };
+
+  try {
+    const res = await fetch(`/api/tv/${tmdbId}`);
+    const data = await res.json();
+    const dropdown = document.getElementById('seasonDropdown');
+    dropdown.innerHTML = data.seasons.map(s => `<option value="${s.season_number}">Season ${s.season_number}</option>`).join('');
+    loadEpisodes();
+  } catch (err) {
+    document.getElementById('episode-grid').innerHTML = '<p>Error loading seasons.</p>';
+  }
+}
+
+async function loadEpisodes() {
+  const { tmdbId } = currentModalMedia;
+  const seasonNum = document.getElementById('seasonDropdown').value;
+  const grid = document.getElementById('episode-grid');
+  grid.innerHTML = '<p>Loading episodes...</p>';
+  
+  try {
+    const res = await fetch(`/api/tv/${tmdbId}/season/${seasonNum}`);
+    const data = await res.json();
+    grid.innerHTML = data.episodes.map(ep => `
+      <button class="episode-btn" onclick="startPlayback(${tmdbId}, '${currentModalMedia.title.replace(/'/g, "\\'")}', 'tv', ${seasonNum}, ${ep.episode_number})">
+        <span style="font-size: 0.75rem; color: var(--accent); display: block; margin-bottom: 0.2rem;">EP ${ep.episode_number}</span>
+        ${ep.name || 'Episode ' + ep.episode_number}
+      </button>
+    `).join('');
+  } catch (err) {
+    grid.innerHTML = '<p>Error loading episodes.</p>';
+  }
+}
+
+function closeEpisodeSelector() {
+  document.getElementById('episode-selector').style.display = 'none';
+}
+
+function startPlayback(tmdbId, title, type, season, episode) {
+  closeEpisodeSelector();
+  document.getElementById('player-container').style.display = 'block';
+  document.getElementById('player-loader').style.display = 'block';
+  
+  showControls();
+
+  const iframe = document.getElementById('videoPlayer');
+  
+  if (type === 'tv') {
+    iframe.src = `https://vidora.ac/tv/${tmdbId}/${season}/${episode}`;
+  } else {
+    iframe.src = `https://vidora.ac/movie/${tmdbId}`;
+  }
+}
+
+function closePlayer() {
+  if (document.fullscreenElement) document.exitFullscreen().catch(err => console.log(err));
+  document.getElementById('player-container').style.display = 'none';
+  document.getElementById('videoPlayer').src = '';
+  document.getElementById('player-loader').style.display = 'none';
+}
+
+function toggleFullscreen() {
+  const container = document.getElementById('player-container');
+  if (!document.fullscreenElement) {
+    if (container.requestFullscreen) container.requestFullscreen();
+    else if (container.webkitRequestFullscreen) container.webkitRequestFullscreen();
+  } else {
+    if (document.exitFullscreen) document.exitFullscreen();
+  }
+}
+
+function showControls() {
+  const closeBtn = document.querySelector('.close-btn');
+  const fsBtn = document.querySelector('.fullscreen-btn');
+  
+  if (closeBtn) closeBtn.classList.remove('hidden');
+  if (fsBtn) fsBtn.classList.remove('hidden');
+
+  clearTimeout(controlsTimeout);
+  controlsTimeout = setTimeout(() => {
+    if (closeBtn) closeBtn.classList.add('hidden');
+    if (fsBtn) fsBtn.classList.add('hidden');
+  }, 3000);
+}
+
+document.addEventListener('mousemove', () => {
+  if (document.getElementById('player-container').style.display === 'block') {
+    showControls();
+  }
 });
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+document.addEventListener('touchstart', () => {
+  if (document.getElementById('player-container').style.display === 'block') {
+    showControls();
+  }
+});
+
+loadHome();
