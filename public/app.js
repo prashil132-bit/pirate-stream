@@ -32,6 +32,7 @@ async function filterAvailableCards(containerEl) {
     const ids = byType[type];
     try {
       const res = await fetch(`/api/check-vidora/batch?type=${type}&ids=${ids.join(',')}`);
+      if (!res.ok) continue;
       const { results } = await res.json();
       for (const c of cards) {
         if (c.dataset.type !== type) continue;
@@ -115,7 +116,10 @@ async function loadMovies(event) {
     const movies = await res.json();
     main.innerHTML = `<div class="search-grid" style="padding-top: 8rem;">${movies.map(cardHTML).join('')}</div>`;
     filterAvailableCards(main);
-  } catch (err) { main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center; color: red;">Connection lost.</div>`; }
+  } catch (err) {
+    console.error('loadMovies failed:', err);
+    main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center; color: #ff6666;">Connection lost: ${err.message}</div>`;
+  }
 }
 
 async function loadSeries(event) {
@@ -131,7 +135,10 @@ async function loadSeries(event) {
     const series = await res.json();
     main.innerHTML = `<div class="search-grid" style="padding-top: 8rem;">${series.map(cardHTML).join('')}</div>`;
     filterAvailableCards(main);
-  } catch (err) { main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center; color: red;">Connection lost.</div>`; }
+  } catch (err) {
+    console.error('loadSeries failed:', err);
+    main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center; color: #ff6666;">Connection lost: ${err.message}</div>`;
+  }
 }
 
 async function loadAnime(event) {
@@ -144,10 +151,23 @@ async function loadAnime(event) {
 
   try {
     const res = await fetch('/api/anime');
+    console.log('anime fetch status:', res.status);
+    if (!res.ok) throw new Error(`server returned ${res.status}`);
     const anime = await res.json();
+    console.log('anime payload:', anime);
+    if (!Array.isArray(anime)) throw new Error('unexpected response shape');
+    if (anime.length === 0) {
+      main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center;">
+        Anime list is empty. Jikan (MAL) API may be slow or rate-limited right now. <button onclick="loadAnime(event)" style="margin-left:1rem;background:var(--accent);color:#fff;border:none;padding:0.5rem 1rem;border-radius:8px;cursor:pointer;">Retry</button>
+      </div>`;
+      return;
+    }
     main.innerHTML = `<div class="search-grid" style="padding-top: 8rem;">${anime.map(cardHTML).join('')}</div>`;
     filterAvailableCards(main);
-  } catch (err) { main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center; color: red;">Connection lost.</div>`; }
+  } catch (err) {
+    console.error('loadAnime failed:', err);
+    main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center; color: #ff6666;">Anime failed: ${err.message}<br><button onclick="loadAnime(event)" style="margin-top:1rem;background:var(--accent);color:#fff;border:none;padding:0.5rem 1rem;border-radius:8px;cursor:pointer;">Retry</button></div>`;
+  }
 }
 
 async function triggerSearch(event) {
@@ -165,8 +185,8 @@ async function triggerSearch(event) {
       fetch(`/api/anime/search?q=${encodeURIComponent(query)}`).then(r => r.json()),
     ]);
 
-    const movies = movieRes.status === 'fulfilled' ? movieRes.value : [];
-    const anime = animeRes.status === 'fulfilled' ? animeRes.value : [];
+    const movies = movieRes.status === 'fulfilled' && Array.isArray(movieRes.value) ? movieRes.value : [];
+    const anime = animeRes.status === 'fulfilled' && Array.isArray(animeRes.value) ? animeRes.value : [];
     const all = [...movies, ...anime];
 
     if (!all.length) {
@@ -175,7 +195,10 @@ async function triggerSearch(event) {
     }
     main.innerHTML = `<div class="search-grid" style="padding-top: 8rem;">${all.map(cardHTML).join('')}</div>`;
     filterAvailableCards(main);
-  } catch (err) { main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center; color: red;">Connection lost.</div>`; }
+  } catch (err) {
+    console.error('triggerSearch failed:', err);
+    main.innerHTML = `<div style="padding: 8rem 4rem; text-align: center; color: #ff6666;">Search failed: ${err.message}</div>`;
+  }
 }
 
 function playMedia(id, title, type) {
@@ -248,7 +271,8 @@ async function openAnimeEpisodeSelector(malId, title) {
     const data = await res.json();
     const count = data.episodes || 100;
     renderAnimeEpisodes(malId, count);
-  } catch {
+  } catch (err) {
+    console.error('openAnimeEpisodeSelector failed:', err);
     renderAnimeEpisodes(malId, 100);
   }
 }
@@ -275,74 +299,4 @@ function setAnimeAudio(audio) {
 function startAnimePlayback(malId, episode) {
   closeEpisodeSelector();
   document.getElementById('player-container').style.display = 'block';
-  document.getElementById('player-loader').style.display = 'block';
-  showControls();
-  const iframe = document.getElementById('videoPlayer');
-  iframe.src = `https://vidora.ac/anime/${malId}/${episode}/${currentAnimeAudio}`;
-}
-
-function closeEpisodeSelector() {
-  document.getElementById('episode-selector').style.display = 'none';
-}
-
-// ── Movie / TV playback
-function startPlayback(tmdbId, title, type, season, episode) {
-  closeEpisodeSelector();
-  document.getElementById('player-container').style.display = 'block';
-  document.getElementById('player-loader').style.display = 'block';
-  showControls();
-
-  const iframe = document.getElementById('videoPlayer');
-  
-  if (type === 'tv') {
-    iframe.src = `https://vidora.ac/tv/${tmdbId}/${season}/${episode}`;
-  } else {
-    iframe.src = `https://vidora.ac/movie/${tmdbId}`;
-  }
-}
-
-function closePlayer() {
-  if (document.fullscreenElement) document.exitFullscreen().catch(err => console.log(err));
-  document.getElementById('player-container').style.display = 'none';
-  document.getElementById('videoPlayer').src = '';
-  document.getElementById('player-loader').style.display = 'none';
-}
-
-function toggleFullscreen() {
-  const container = document.getElementById('player-container');
-  if (!document.fullscreenElement) {
-    if (container.requestFullscreen) container.requestFullscreen();
-    else if (container.webkitRequestFullscreen) container.webkitRequestFullscreen();
-  } else {
-    if (document.exitFullscreen) document.exitFullscreen();
-  }
-}
-
-function showControls() {
-  const closeBtn = document.querySelector('.close-btn');
-  const fsBtn = document.querySelector('.fullscreen-btn');
-  
-  if (closeBtn) closeBtn.classList.remove('hidden');
-  if (fsBtn) fsBtn.classList.remove('hidden');
-
-  clearTimeout(controlsTimeout);
-  controlsTimeout = setTimeout(() => {
-    if (closeBtn) closeBtn.classList.add('hidden');
-    if (fsBtn) fsBtn.classList.add('hidden');
-  }, 3000);
-}
-
-document.addEventListener('mousemove', () => {
-  if (document.getElementById('player-container').style.display === 'block') {
-    showControls();
-  }
-});
-
-document.addEventListener('touchstart', () => {
-  if (document.getElementById('player-container').style.display === 'block') {
-    showControls();
-  }
-});
-
-// --- INITIALIZE THE HOMEPAGE ---
-loadHome();
+ 
