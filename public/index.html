@@ -8,6 +8,38 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@300;400;500;600;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
+  <style>
+    .audio-pills {
+      display: inline-flex;
+      gap: 0.4rem;
+      background: rgba(255,255,255,0.05);
+      padding: 0.25rem;
+      border-radius: 999px;
+    }
+    .audio-pill {
+      background: none;
+      border: none;
+      color: inherit;
+      padding: 0.35rem 0.9rem;
+      border-radius: 999px;
+      font-family: var(--font-sans, Inter, sans-serif);
+      font-size: 0.85rem;
+      cursor: pointer;
+      opacity: 0.65;
+      transition: all 0.2s;
+    }
+    .audio-pill.active {
+      background: var(--accent, #e5b355);
+      color: #000;
+      opacity: 1;
+      font-weight: 600;
+    }
+    .episode-scroll {
+      max-height: 60vh;
+      overflow-y: auto;
+      padding-right: 0.5rem;
+    }
+  </style>
 </head>
 <body>
   <!-- Ad Blocker Notice -->
@@ -25,6 +57,7 @@
       <a href="#" onclick="loadHome(event)">Home</a>
       <a href="#" onclick="loadMovies(event)">Films</a>
       <a href="#" onclick="loadSeries(event)">Series</a>
+      <a href="#" onclick="loadAnime(event)">Anime</a>
     </div>
     <div class="nav-right">
       <div class="search-wrap">
@@ -56,10 +89,18 @@
     <div class="modal-content">
       <button class="close-modal" onclick="closeEpisodeSelector()">✕</button>
       <h2 id="modal-title">Select Episode</h2>
-      
-      <div class="selector-row">
+
+      <div class="selector-row" id="seasonRow">
         <label>Season:</label>
         <select id="seasonDropdown" onchange="loadEpisodes()"></select>
+      </div>
+
+      <div class="selector-row" id="audioToggleRow" style="display: none;">
+        <label>Audio:</label>
+        <div class="audio-pills">
+          <button type="button" class="audio-pill active" data-audio="sub" onclick="setAnimeAudio('sub')">Sub</button>
+          <button type="button" class="audio-pill" data-audio="dub" onclick="setAnimeAudio('dub')">Dub</button>
+        </div>
       </div>
 
       <div id="episode-grid" class="episode-grid"></div>
