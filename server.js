@@ -143,6 +143,31 @@ const formatAnime = (items) => (items || []).map(a => ({
   media_type: 'anime'
 }));
 
+// ── Jikan cache (avoid hammering their API)
+const jikanCache = new Map();
+const JIKAN_CACHE_TTL = 30 * 60 * 1000;
+
+function cacheGet(key) {
+  const c = jikanCache.get(key);
+  if (c && Date.now() - c.ts < JIKAN_CACHE_TTL) return c.data;
+  return null;
+}
+function cacheSet(key, data) {
+  jikanCache.set(key, { data, ts: Date.now() });
+}
+
+async function jikanGet(path, params = {}) {
+  const res = await axios.get(`${JIKAN_BASE_URL}${path}`, {
+    params,
+    timeout: 12000,
+    headers: {
+      'User-Agent': 'PirateStream/1.0 (+https://pirate-stream.onrender.com)',
+      'Accept': 'application/json',
+    },
+  });
+  return res.data;
+}
+
 // ── Home
 app.get('/api/home', async (req, res) => {
   try {
@@ -151,14 +176,14 @@ app.get('/api/home', async (req, res) => {
       axios.get(`${TMDB_BASE_URL}/discover/movie?api_key=${TMDB_API_KEY}&with_genres=28&sort_by=popularity.desc`),
       axios.get(`${TMDB_BASE_URL}/discover/tv?api_key=${TMDB_API_KEY}&sort_by=popularity.desc`),
       axios.get(`${TMDB_BASE_URL}/discover/movie?api_key=${TMDB_API_KEY}&with_original_language=hi&sort_by=popularity.desc`),
-      axios.get(`${JIKAN_BASE_URL}/top/anime?limit=24`, { timeout: 10000 })
+      jikanGet('/top/anime', { limit: 24 }).catch(() => ({ data: [] })),
     ]);
 
     const trending = trendingRes.status === 'fulfilled' ? trendingRes.value.data.results : [];
     const action = actionRes.status === 'fulfilled' ? actionRes.value.data.results : [];
     const series = seriesRes.status === 'fulfilled' ? seriesRes.value.data.results : [];
     const bollywood = bollywoodRes.status === 'fulfilled' ? bollywoodRes.value.data.results : [];
-    const anime = animeRes.status === 'fulfilled' ? (animeRes.value.data.data || []) : [];
+    const anime = animeRes.status === 'fulfilled' ? (animeRes.value.data || []) : [];
 
     const heroPool = trending.filter(m => m.backdrop_path);
     const hero = heroPool.length > 0 ? heroPool[Math.floor(Math.random() * Math.min(10, heroPool.length))] : trending[0];
@@ -204,43 +229,64 @@ app.get('/api/search', async (req, res) => {
   } catch { res.status(500).json({ error: 'Failed' }); }
 });
 
-// ── Anime routes (Jikan)
+// ── Anime routes (Jikan, fail-safe)
 app.get('/api/anime', async (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  const key = `top:${page}`;
+  const cached = cacheGet(key);
+  if (cached) return res.json(cached);
+
   try {
-    const page = parseInt(req.query.page) || 1;
-    const response = await axios.get(`${JIKAN_BASE_URL}/top/anime`, {
-      params: { limit: 24, page },
-      timeout: 10000,
-    });
-    res.json(formatAnime(response.data.data || []));
-  } catch { res.status(500).json({ error: 'Failed to fetch anime' }); }
+    const data = await jikanGet('/top/anime', { limit: 24, page });
+    const formatted = formatAnime(data.data || []);
+    cacheSet(key, formatted);
+    res.json(formatted);
+  } catch (err) {
+    console.error('Jikan /top/anime failed:', err.message);
+    res.json([]);
+  }
 });
 
 app.get('/api/anime/search', async (req, res) => {
   const query = req.query.q;
   if (!query) return res.json([]);
+  const key = `search:${query}`;
+  const cached = cacheGet(key);
+  if (cached) return res.json(cached);
+
   try {
-    const response = await axios.get(`${JIKAN_BASE_URL}/anime`, {
-      params: { q: query, limit: 24, order_by: 'score', sort: 'desc' },
-      timeout: 10000,
-    });
-    res.json(formatAnime(response.data.data || []));
-  } catch { res.status(500).json({ error: 'Search failed' }); }
+    const data = await jikanGet('/anime', { q: query, limit: 24, order_by: 'score', sort: 'desc' });
+    const formatted = formatAnime(data.data || []);
+    cacheSet(key, formatted);
+    res.json(formatted);
+  } catch (err) {
+    console.error('Jikan /anime search failed:', err.message);
+    res.json([]);
+  }
 });
 
 app.get('/api/anime/:id', async (req, res) => {
+  const key = `id:${req.params.id}`;
+  const cached = cacheGet(key);
+  if (cached) return res.json(cached);
+
   try {
-    const response = await axios.get(`${JIKAN_BASE_URL}/anime/${req.params.id}`, { timeout: 10000 });
-    const a = response.data.data;
-    res.json({
+    const data = await jikanGet(`/anime/${req.params.id}`);
+    const a = data.data;
+    const out = {
       id: a.mal_id,
       title: a.title_english || a.title,
       episodes: a.episodes || null,
       year: (a.year || (a.aired && a.aired.prop && a.aired.prop.from && a.aired.prop.from.year)) || 'N/A',
       poster: a.images && a.images.jpg && a.images.jpg.large_image_url,
       status: a.status || '',
-    });
-  } catch { res.status(500).json({ error: 'Failed' }); }
+    };
+    cacheSet(key, out);
+    res.json(out);
+  } catch (err) {
+    console.error(`Jikan /anime/${req.params.id} failed:`, err.message);
+    res.json({ id: req.params.id, title: 'Unknown', episodes: null });
+  }
 });
 
 // ── TMDB tv routes
