@@ -189,9 +189,9 @@ function startPlayback(tmdbId, title, type, season, episode) {
   const iframe = document.getElementById('videoPlayer');
   
   if (type === 'tv') {
-    iframe.src = `https://vidfast.pro/tv/${tmdbId}/${season}/${episode}`;
+    iframe.src = `https://vidora.ac/tv/${tmdbId}/${season}/${episode}`;
   } else {
-    iframe.src = `https://vidfast.pro/movie/${tmdbId}`;
+    iframe.src = `https://vidora.ac/movie/${tmdbId}`;
   }
 }
 
